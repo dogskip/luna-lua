@@ -8,6 +8,11 @@
 -- 동시성: Lua는 단일 스레드이므로 별도 락 불필요. 단, 코루틴
 -- 양보 중에 상태가 바뀔 수 있으므로, 콜백(evict) 내에서 양보하지
 -- 않는 것이 안전하다.
+--
+-- 재진입 가드 (이슈 #6): on_evict 콜백이 캐시 메서드를 다시
+-- 호출하는 실수를 감지한다. 콜백 도중 캐시 구조가 바뀌면
+-- 연결 리스트가 깨질 수 있으므로, 진입 중인 연산 수를 세어
+-- 1 초과 시 에러를 던진다.
 
 local LRU = {}
 LRU.__index = LRU
@@ -54,7 +59,26 @@ function LRU.new(capacity)
   self.hits = 0
   self.misses = 0
   self.evictions = 0
+  -- 재진입 깊이. 0이면 유휴, 1 이상이면 연산 진행 중.
+  -- on_evict 콜백이 캐시 메서드를 재호출하면 2가 되어 에러.
+  self._busy = 0
   return self
+end
+
+-- 재진입 가드. 연산을 감싸서 실행.
+-- 콜백이 캐시를 다시 건드리면 _busy > 1이 되어 감지.
+-- pcall로 감싸 에러 시에도 _busy가 복귀하도록 보장.
+function LRU:_guard(fn)
+  if self._busy > 0 then
+    error("reentrant cache access detected (on_evict callback must not touch the cache)", 3)
+  end
+  self._busy = 1
+  local ok, result = pcall(fn)
+  self._busy = 0
+  if not ok then
+    error(result, 2)
+  end
+  return result
 end
 
 -- 노드를 head로 이동 (가장 최근으로).
@@ -99,19 +123,21 @@ end
 -- 키로 값 조회. 접근 시 head로 이동.
 -- 만료된 항목은 자동 삭제 후 nil 반환.
 function LRU:get(key)
-  local node = self.map[key]
-  if node == nil then
-    self.misses = self.misses + 1
-    return nil
-  end
-  if node:is_expired() then
-    self:_remove_node(node)
-    self.misses = self.misses + 1
-    return nil
-  end
-  self.hits = self.hits + 1
-  self:_move_to_head(node)
-  return node.value
+  return self:_guard(function()
+    local node = self.map[key]
+    if node == nil then
+      self.misses = self.misses + 1
+      return nil
+    end
+    if node:is_expired() then
+      self:_remove_node(node)
+      self.misses = self.misses + 1
+      return nil
+    end
+    self.hits = self.hits + 1
+    self:_move_to_head(node)
+    return node.value
+  end)
 end
 
 -- 접근 순서를 갱신하지 않고 값만 조회.
@@ -163,29 +189,31 @@ end
 -- 키-값 설정. 기존 키면 갱신, 아니면 추가.
 -- 용량 초과 시 tail(LRU) 증발.
 function LRU:set(key, value, ttl)
-  local node = self.map[key]
-  if node then
-    -- 갱신.
-    node.value = value
-    if ttl and ttl > 0 then
-      node.expires_at = os.time() + ttl
-    else
-      node.expires_at = nil
+  self:_guard(function()
+    local node = self.map[key]
+    if node then
+      -- 갱신.
+      node.value = value
+      if ttl and ttl > 0 then
+        node.expires_at = os.time() + ttl
+      else
+        node.expires_at = nil
+      end
+      self:_move_to_head(node)
+      return
     end
-    self:_move_to_head(node)
-    return
-  end
 
-  -- 새 노드.
-  node = Node.new(key, value, ttl)
-  self.map[key] = node
-  self:_push_front(node)
-  self.size = self.size + 1
+    -- 새 노드.
+    node = Node.new(key, value, ttl)
+    self.map[key] = node
+    self:_push_front(node)
+    self.size = self.size + 1
 
-  -- 용량 초과 시 tail 증발.
-  if self.size > self.capacity then
-    self:_evict_tail()
-  end
+    -- 용량 초과 시 tail 증발.
+    if self.size > self.capacity then
+      self:_evict_tail()
+    end
+  end)
 end
 
 -- tail(LRU 항목) 증발.
@@ -211,12 +239,14 @@ end
 
 -- 키 삭제. 명시적 삭제는 콜백을 호출하지 않음.
 function LRU:delete(key)
-  local node = self.map[key]
-  if node then
-    self:_remove_node(node)
-    return true
-  end
-  return false
+  return self:_guard(function()
+    local node = self.map[key]
+    if node then
+      self:_remove_node(node)
+      return true
+    end
+    return false
+  end)
 end
 
 -- 만료된 모든 항목 제거. 반환값: 제거된 항목 수.
