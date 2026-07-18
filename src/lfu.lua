@@ -42,6 +42,7 @@ function LFU.new(capacity)
   self.capacity = capacity
   self.size = 0
   self.map = {}
+  self.on_evict = nil  -- 증발 콜백: function(key, value)
   return self
 end
 
@@ -58,6 +59,50 @@ function LFU:get(key)
   node.freq = node.freq + 1
   node.last_access = os.time()
   return node.value
+end
+
+-- 빈도 증가 없이 값만 조회.
+function LFU:peek(key)
+  local node = self.map[key]
+  if node == nil then
+    return nil
+  end
+  if node:is_expired() then
+    self:_remove(key)
+    return nil
+  end
+  return node.value
+end
+
+-- 키 존재 여부. 빈도 갱신 없음.
+function LFU:has(key)
+  local node = self.map[key]
+  if node == nil then
+    return false
+  end
+  if node:is_expired() then
+    self:_remove(key)
+    return false
+  end
+  return true
+end
+
+-- 남은 TTL (초). 만료 없음이면 nil, 만료 시 0.
+function LFU:ttl(key)
+  local node = self.map[key]
+  if node == nil then
+    return nil
+  end
+  if node.expires_at == nil then
+    return nil
+  end
+  local now = os.time()
+  local remaining = node.expires_at - now
+  if remaining <= 0 then
+    self:_remove(key)
+    return 0
+  end
+  return remaining
 end
 
 function LFU:set(key, value, ttl)
@@ -86,6 +131,7 @@ function LFU:_evict_lfu()
   local min_freq = nil
   local min_key = nil
   local min_time = nil
+  local min_node = nil
 
   for k, n in pairs(self.map) do
     if min_freq == nil or n.freq < min_freq or
@@ -93,12 +139,17 @@ function LFU:_evict_lfu()
       min_freq = n.freq
       min_key = k
       min_time = n.last_access
+      min_node = n
     end
   end
 
   if min_key then
     self.map[min_key] = nil
     self.size = self.size - 1
+    -- 용량 초과 증발 시 콜백 호출.
+    if self.on_evict and min_node then
+      self.on_evict(min_key, min_node.value)
+    end
   end
 end
 

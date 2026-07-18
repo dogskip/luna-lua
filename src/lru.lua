@@ -49,6 +49,7 @@ function LRU.new(capacity)
   self.map = {}  -- key → Node
   self.head = nil  -- 가장 최근
   self.tail = nil  -- 가장 오래된
+  self.on_evict = nil  -- 증발 콜백: function(key, value)
   return self
 end
 
@@ -106,6 +107,52 @@ function LRU:get(key)
   return node.value
 end
 
+-- 접근 순서를 갱신하지 않고 값만 조회.
+-- 통계/디버그 용도. 만료 여부도 확인.
+function LRU:peek(key)
+  local node = self.map[key]
+  if node == nil then
+    return nil
+  end
+  if node:is_expired() then
+    self:_remove_node(node)
+    return nil
+  end
+  return node.value
+end
+
+-- 키 존재 여부. 접근 순서 갱신 없음. 만료 시 자동 삭제 후 false.
+function LRU:has(key)
+  local node = self.map[key]
+  if node == nil then
+    return false
+  end
+  if node:is_expired() then
+    self:_remove_node(node)
+    return false
+  end
+  return true
+end
+
+-- 항목의 남은 TTL 반환 (초). 만료 없음이면 nil.
+-- 이미 만료된 경우 0.
+function LRU:ttl(key)
+  local node = self.map[key]
+  if node == nil then
+    return nil
+  end
+  if node.expires_at == nil then
+    return nil
+  end
+  local now = os.time()
+  local remaining = node.expires_at - now
+  if remaining <= 0 then
+    self:_remove_node(node)
+    return 0
+  end
+  return remaining
+end
+
 -- 키-값 설정. 기존 키면 갱신, 아니면 추가.
 -- 용량 초과 시 tail(LRU) 증발.
 function LRU:set(key, value, ttl)
@@ -139,17 +186,22 @@ function LRU:_evict_tail()
   if self.tail == nil then
     return
   end
-  self:_remove_node(self.tail)
+  local evicted = self.tail
+  self:_remove_node(evicted)
+  -- 용량 초과 증발 시 콜백 호출.
+  if self.on_evict then
+    self.on_evict(evicted.key, evicted.value)
+  end
 end
 
--- 노드 제거.
+-- 노드 제거. 콜백은 호출하지 않음 (내부 정리용).
 function LRU:_remove_node(node)
   self:_unlink(node)
   self.map[node.key] = nil
   self.size = self.size - 1
 end
 
--- 키 삭제.
+-- 키 삭제. 명시적 삭제는 콜백을 호출하지 않음.
 function LRU:delete(key)
   local node = self.map[key]
   if node then
