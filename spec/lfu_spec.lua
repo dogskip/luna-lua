@@ -186,6 +186,60 @@ test("on_evict not called on explicit delete", function()
   assert_eq(called, false)
 end)
 
+test("stats counts hits and misses", function()
+  local c = LFU.new(3)
+  c:set("a", 1)
+  c:get("a")  -- hit
+  c:get("missing")  -- miss
+  local s = c:stats()
+  assert_eq(s.hits, 1)
+  assert_eq(s.misses, 1)
+  assert_eq(s.size, 1)
+end)
+
+test("stats hit_rate computation", function()
+  local c = LFU.new(3)
+  c:set("a", 1)
+  c:get("a")  -- hit
+  c:get("a")  -- hit
+  c:get("b")  -- miss
+  c:get("c")  -- miss
+  local s = c:stats()
+  -- 2 hits / 4 total = 0.5
+  assert_true(math.abs(s.hit_rate - 0.5) < 0.001)
+end)
+
+test("stats counts evictions", function()
+  local c = LFU.new(2)
+  c:set("a", 1)
+  c:set("b", 2)
+  c:set("c", 3)  -- 증발 1건
+  local s = c:stats()
+  assert_eq(s.evictions, 1)
+end)
+
+test("reset_stats clears counters only", function()
+  local c = LFU.new(3)
+  c:set("a", 1)
+  c:get("a")
+  c:reset_stats()
+  local s = c:stats()
+  assert_eq(s.hits, 0)
+  assert_eq(s.misses, 0)
+  -- 데이터는 유지.
+  assert_eq(c:get("a"), 1)
+end)
+
+test("expired get counts as miss", function()
+  local c = LFU.new(3)
+  c:set("a", 1, 1)
+  c.map["a"].expires_at = os.time() - 1
+  assert_eq(c:get("a"), nil)
+  local s = c:stats()
+  assert_eq(s.misses, 1)
+  assert_eq(s.hits, 0)
+end)
+
 print(string.format("\nLFU: %d passed, %d failed\n", passed, failed))
 if failed > 0 then
   os.exit(1)
