@@ -26,3 +26,16 @@ jobs:
         run: lua spec/lfu_spec.lua
         env:
           LUA_PATH: src/?.lua;;
+
+  lint:
+    runs-on: ubuntu-latest
+    # luacheck 정적 분석으로 미사용 변수, 전역 오염 등 포착.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install luacheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luarocks
+          sudo luarocks install luacheck
+      - name: Run luacheck
+        run: luacheck src spec --codes --no-config
