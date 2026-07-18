@@ -137,6 +137,82 @@ test("purge_expired removes expired entries", function()
   assert_eq(c:get("b"), 2)
 end)
 
+test("peek returns value without updating order", function()
+  local c = LRU.new(3)
+  c:set("a", 1)
+  c:set("b", 2)
+  c:set("c", 3)
+  -- peek("a")는 접근 순서를 갱신하지 않아야.
+  assert_eq(c:peek("a"), 1)
+  -- "d" 추가 시 가장 오래된 "a"가 증발해야 (peek이 순서를 안 바꿨으므로).
+  c:set("d", 4)
+  assert_eq(c:peek("a"), nil)
+  assert_eq(c:peek("b"), 2)
+end)
+
+test("has returns existence without side effects", function()
+  local c = LRU.new(3)
+  c:set("a", 1)
+  assert_true(c:has("a"))
+  assert_eq(c:has("missing"), false)
+end)
+
+test("has returns false for expired entry", function()
+  local c = LRU.new(3)
+  c:set("a", 1, 1)
+  c.map["a"].expires_at = os.time() - 1
+  assert_eq(c:has("a"), false)
+  -- 만료 항목이 제거되었는지.
+  assert_eq(c:len(), 0)
+end)
+
+test("ttl returns remaining seconds", function()
+  local c = LRU.new(3)
+  c:set("a", 1, 100)
+  local remaining = c:ttl("a")
+  assert_true(remaining ~= nil)
+  assert_true(remaining > 95 and remaining <= 100)
+end)
+
+test("ttl returns nil for no-expiry entry", function()
+  local c = LRU.new(3)
+  c:set("a", 1)
+  assert_eq(c:ttl("a"), nil)
+end)
+
+test("ttl returns 0 for expired entry", function()
+  local c = LRU.new(3)
+  c:set("a", 1, 1)
+  c.map["a"].expires_at = os.time() - 1
+  assert_eq(c:ttl("a"), 0)
+end)
+
+test("on_evict callback fires on capacity eviction", function()
+  local c = LRU.new(2)
+  local evicted_key = nil
+  local evicted_val = nil
+  c.on_evict = function(k, v)
+    evicted_key = k
+    evicted_val = v
+  end
+  c:set("a", 1)
+  c:set("b", 2)
+  c:set("c", 3)  -- "a" 증발 예상.
+  assert_eq(evicted_key, "a")
+  assert_eq(evicted_val, 1)
+end)
+
+test("on_evict not called on explicit delete", function()
+  local c = LRU.new(3)
+  local called = false
+  c.on_evict = function()
+    called = true
+  end
+  c:set("a", 1)
+  c:delete("a")
+  assert_eq(called, false)
+end)
+
 print(string.format("\nLRU: %d passed, %d failed\n", passed, failed))
 if failed > 0 then
   os.exit(1)

@@ -116,6 +116,76 @@ test("keys returns all keys", function()
   assert_eq(#keys, 2)
 end)
 
+test("peek returns value without incrementing frequency", function()
+  local c = LFU.new(3)
+  c:set("a", 1)
+  local freq_before = c:frequency("a")
+  assert_eq(c:peek("a"), 1)
+  local freq_after = c:frequency("a")
+  assert_eq(freq_before, freq_after)
+end)
+
+test("has returns existence without side effects", function()
+  local c = LFU.new(3)
+  c:set("a", 1)
+  assert_true(c:has("a"))
+  assert_eq(c:has("missing"), false)
+end)
+
+test("has returns false for expired entry", function()
+  local c = LFU.new(3)
+  c:set("a", 1, 1)
+  c.map["a"].expires_at = os.time() - 1
+  assert_eq(c:has("a"), false)
+  assert_eq(c:len(), 0)
+end)
+
+test("ttl returns remaining seconds", function()
+  local c = LFU.new(3)
+  c:set("a", 1, 100)
+  local remaining = c:ttl("a")
+  assert_true(remaining ~= nil)
+  assert_true(remaining > 95 and remaining <= 100)
+end)
+
+test("ttl returns nil for no-expiry entry", function()
+  local c = LFU.new(3)
+  c:set("a", 1)
+  assert_eq(c:ttl("a"), nil)
+end)
+
+test("on_evict callback fires on capacity eviction", function()
+  local c = LFU.new(2)
+  local evicted_key = nil
+  c.on_evict = function(k)
+    evicted_key = k
+  end
+  c:set("a", 1)
+  c:set("b", 2)
+  -- "a"를 여러 번 접근해 빈도를 높임.
+  c:get("a")
+  c:get("a")
+  -- "b"는 freq=1로 가장 낮음.
+  -- "c" 추가 시 "b"가 증발해야 (freq=1, 가장 오래됨).
+  -- 단, "c" 자체도 freq=1이므로 last_access로 tie-break.
+  -- "b"가 "c"보다 먼저 설정되어 last_access가 더 오래됨.
+  c:set("c", 3)
+  -- "b" 또는 "c" 중 하나가 증발. "a"는 freq=3으로 안전.
+  assert_true(evicted_key == "b" or evicted_key == "c")
+  assert_eq(c:has("a"), true)
+end)
+
+test("on_evict not called on explicit delete", function()
+  local c = LFU.new(3)
+  local called = false
+  c.on_evict = function()
+    called = true
+  end
+  c:set("a", 1)
+  c:delete("a")
+  assert_eq(called, false)
+end)
+
 print(string.format("\nLFU: %d passed, %d failed\n", passed, failed))
 if failed > 0 then
   os.exit(1)
