@@ -43,21 +43,28 @@ function LFU.new(capacity)
   self.size = 0
   self.map = {}
   self.on_evict = nil  -- 증발 콜백: function(key, value)
+  -- 통계 카운터.
+  self.hits = 0
+  self.misses = 0
+  self.evictions = 0
   return self
 end
 
 function LFU:get(key)
   local node = self.map[key]
   if node == nil then
+    self.misses = self.misses + 1
     return nil
   end
   if node:is_expired() then
     self:_remove(key)
+    self.misses = self.misses + 1
     return nil
   end
   -- 접근 빈도 증가.
   node.freq = node.freq + 1
   node.last_access = os.time()
+  self.hits = self.hits + 1
   return node.value
 end
 
@@ -146,6 +153,7 @@ function LFU:_evict_lfu()
   if min_key then
     self.map[min_key] = nil
     self.size = self.size - 1
+    self.evictions = self.evictions + 1
     -- 용량 초과 증발 시 콜백 호출.
     if self.on_evict and min_node then
       self.on_evict(min_key, min_node.value)
@@ -197,6 +205,30 @@ end
 function LFU:clear()
   self.map = {}
   self.size = 0
+end
+
+-- 통계 반환. hit/miss/eviction 카운트와 hit rate.
+function LFU:stats()
+  local total = self.hits + self.misses
+  local hit_rate = 0
+  if total > 0 then
+    hit_rate = self.hits / total
+  end
+  return {
+    hits = self.hits,
+    misses = self.misses,
+    evictions = self.evictions,
+    size = self.size,
+    capacity = self.capacity,
+    hit_rate = hit_rate,
+  }
+end
+
+-- 통계 카운터만 초기화 (캐시 데이터는 유지).
+function LFU:reset_stats()
+  self.hits = 0
+  self.misses = 0
+  self.evictions = 0
 end
 
 -- 항목의 현재 빈도 조회 (테스트/디버그용).

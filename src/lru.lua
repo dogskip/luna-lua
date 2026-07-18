@@ -50,6 +50,10 @@ function LRU.new(capacity)
   self.head = nil  -- 가장 최근
   self.tail = nil  -- 가장 오래된
   self.on_evict = nil  -- 증발 콜백: function(key, value)
+  -- 통계 카운터.
+  self.hits = 0
+  self.misses = 0
+  self.evictions = 0
   return self
 end
 
@@ -97,12 +101,15 @@ end
 function LRU:get(key)
   local node = self.map[key]
   if node == nil then
+    self.misses = self.misses + 1
     return nil
   end
   if node:is_expired() then
     self:_remove_node(node)
+    self.misses = self.misses + 1
     return nil
   end
+  self.hits = self.hits + 1
   self:_move_to_head(node)
   return node.value
 end
@@ -188,6 +195,7 @@ function LRU:_evict_tail()
   end
   local evicted = self.tail
   self:_remove_node(evicted)
+  self.evictions = self.evictions + 1
   -- 용량 초과 증발 시 콜백 호출.
   if self.on_evict then
     self.on_evict(evicted.key, evicted.value)
@@ -247,6 +255,30 @@ function LRU:clear()
   self.head = nil
   self.tail = nil
   self.size = 0
+end
+
+-- 통계 반환. hit/miss/eviction 카운트와 hit rate.
+function LRU:stats()
+  local total = self.hits + self.misses
+  local hit_rate = 0
+  if total > 0 then
+    hit_rate = self.hits / total
+  end
+  return {
+    hits = self.hits,
+    misses = self.misses,
+    evictions = self.evictions,
+    size = self.size,
+    capacity = self.capacity,
+    hit_rate = hit_rate,
+  }
+end
+
+-- 통계 카운터만 초기화 (캐시 데이터는 유지).
+function LRU:reset_stats()
+  self.hits = 0
+  self.misses = 0
+  self.evictions = 0
 end
 
 return LRU
